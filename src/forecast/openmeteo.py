@@ -59,6 +59,8 @@ class MaxTempForecast:
     members_max_c: np.ndarray   # one daily-max per ensemble member
     bias_c: float = 0.0         # learned calibration offset (subtracted from mean)
     sigma_floor: float = DEFAULT_SIGMA_FLOOR
+    sigma_min: float = 0.0      # per-station HARD floor on final σ (targeted humility
+                                # for overconfident/drifting stations; 0 = none)
     emos: tuple | None = None   # (a,b,c,d): μ=a+b·mean, σ²=c+d·var (overrides above)
 
     @property

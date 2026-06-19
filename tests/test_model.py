@@ -23,9 +23,22 @@ def test_gte_lte_complement():
 
 
 def test_tight_ensemble_concentrates_mass():
+    # With the LOW global σ floor (0.5°, neutral for calibration), a tight
+    # ensemble is allowed to concentrate — sharp forecasts must stay sharp.
     fc = _fc([30.0, 30.1, 29.9, 30.0, 30.05])
     assert prob_exact(fc, 30) > 0.3
     assert prob_exact(fc, 25) < 0.01
+
+
+def test_per_station_sigma_min_widens_only_that_station():
+    # The TARGETED humility: sigma_min hard-floors a single overconfident station
+    # (e.g. RCSS/Taipei) so a far bucket can't collapse to ~0, WITHOUT touching
+    # well-calibrated stations. Same tight ensemble, sigma_min=2.0 => much flatter.
+    sharp = _fc([30.0, 30.1, 29.9, 30.0, 30.05])
+    humble = _fc([30.0, 30.1, 29.9, 30.0, 30.05])
+    humble.sigma_min = 2.0
+    assert prob_exact(humble, 30) < prob_exact(sharp, 30)      # mode widened
+    assert prob_exact(humble, 33) > 2 * prob_exact(sharp, 33)  # tail lifted a lot
 
 
 def test_kelly_zero_without_edge():

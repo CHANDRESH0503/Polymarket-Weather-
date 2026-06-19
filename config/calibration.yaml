@@ -22,6 +22,11 @@ KLGA:
     d: 0.282
 RCSS:
   bias: 0.25
+  # Targeted humility: Taipei ran 2.6–4.8° (3–4σ) hot in a June heat regime the
+  # EMOS spread didn't anticipate, producing ruinous ~0.000-prob "No" bets. This
+  # hard σ floor caps that overconfidence WITHOUT touching other stations (a
+  # global floor degraded aggregate Brier — see config.py MIN_PREDICTIVE_SIGMA).
+  sigma_min: 2.0
   emos:
     a: -0.692
     b: 1.061

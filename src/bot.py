@@ -18,6 +18,7 @@ from .config import MIN_EDGE, DRY_RUN
 from .polymarket.gamma import fetch_open_temperature_events, parse_event
 from .polymarket.clob import place_order
 from .strategy.edge import generate_signals
+from .strategy import drift
 
 
 def run_once() -> None:
@@ -27,7 +28,10 @@ def run_once() -> None:
     markets = [m for ev in events for m in parse_event(ev)]
     print(f"discovered {len(events)} temperature events / {len(markets)} bucket markets")
 
-    signals = generate_signals(markets)
+    blocked = drift.current_blocked()      # bench drifting stations (capital protection)
+    if blocked:
+        print(f"drift guard benched: {', '.join(sorted(blocked))}")
+    signals = generate_signals(markets, blocked_stations=blocked)
     print(f"\n{len(signals)} actionable signal(s):")
     for s in signals:
         print(" ", s)

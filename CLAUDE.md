@@ -312,10 +312,12 @@ src/
   analysis/
     resolution_audit.py  METAR-vs-Polymarket-resolution fidelity audit
   strategy/
-    edge.py              edge detection + tradability + NOWCAST + corr-Kelly sizing
+    edge.py              edge detection + tradability + NOWCAST + corr-Kelly + drift guard
+    drift.py             per-station drift kill-switch (bench a station whose rolling MAE blows out)
     sizing.py            fractional Kelly + correlation-aware (simultaneous) Kelly
     arbitrage.py         coherence / neg-risk basket arb (Σ YES vs 1)
-    market_making.py     fair-value LP quotes for liquidity rewards
+    market_making.py     fair-value LP quotes + reward-maximising 2-sided sizing
+    lp_rewards.py        CLOB v2 maker-reward scoring (S(v,s), Q_min, reward est)
   paper/
     store.py             SQLite schema/helpers (data/paper.db)
     engine.py            PaperBroker: fills, live marks, settlement, equity
@@ -331,6 +333,8 @@ scripts/backfill_fills.py  heal forecast metadata on legacy paper fills
 scripts/analyze_trader.py  profile any wallet (used to study @lactesting)
 scripts/arb_scan.py        scan events for coherence arbitrage (--loop to catch windows)
 scripts/lp_quotes.py       LP reward quote sheet (fair-value-anchored maker quotes)
+scripts/lp_bot.py          live LP daemon: reward-ranked 2-sided quotes under capital cap (LP_EXECUTE-gated)
+scripts/lp_backtest.py     backtest LP reward yield + adverse-selection P&L on recorded trades
 scripts/market_backtest.py forecast-vs-PRICE edge test (our Brier vs market's)
 scripts/calibrate.py       backtest + live calibration report (learns bias/sigma)
 scripts/nowcast_scan.py    Tier 3 nowcast probe: ENS vs NOW vs MKT, market-slowness

@@ -17,7 +17,7 @@ import time
 from ..config import MIN_EDGE, PEER_SIGNAL, ARB_SCAN, ARB_MIN_PROFIT, BANKROLL
 from ..polymarket.gamma import fetch_open_temperature_events, parse_event
 from ..strategy.edge import generate_signals
-from ..strategy import peer_signal, arbitrage
+from ..strategy import peer_signal, arbitrage, drift
 from .. import notify
 from .engine import PaperBroker
 from .forecast_cache import refresh_forecast_cache, cache_scorer
@@ -59,8 +59,17 @@ def tick(broker: PaperBroker) -> None:
         "SELECT equity FROM equity ORDER BY ts DESC LIMIT 1").fetchone()
     bankroll = last_eq["equity"] if last_eq else store.get_meta(
         broker.con, "starting_cash", BANKROLL)
+    # Drift kill-switch: bench stations whose recent forecast keeps missing.
+    from ..config import DRIFT_GUARD, DRIFT_LOOKBACK_DAYS, DRIFT_MAX_MAE, DRIFT_MIN_SAMPLES
+    blocked = set()
+    if DRIFT_GUARD:
+        metrics = store.station_error_metrics(broker.con, DRIFT_LOOKBACK_DAYS)
+        blocked = drift.drifting_stations(metrics, DRIFT_MAX_MAE, DRIFT_MIN_SAMPLES)
+        if blocked:
+            print(f"  drift guard benched: {', '.join(sorted(blocked))}")
     signals = generate_signals(markets, scorer_for=cache_scorer(scorers),
-                               peer_book=peer_book, bankroll=bankroll)
+                               peer_book=peer_book, bankroll=bankroll,
+                               blocked_stations=blocked)
     n_arb = _scan_arb(broker, events) if ARB_SCAN else 0
 
     broker.prefetch_books([s.token_id for s in signals])   # for depth-aware fills
@@ -79,6 +88,12 @@ def tick(broker: PaperBroker) -> None:
             print(f"  backfilled {filled_actuals} actual max-temp(s)")
     except Exception as e:  # noqa: BLE001
         print(f"  ! backfill_actuals failed ({e}); skipping this tick")
+
+    # Compound realized profit: sweep 50% of each fully-resolved day's net P&L
+    # (when > $10) into the capital base, expanding the exposure caps as we win.
+    for sw in broker.sweep_profit_to_capital():
+        print(f"  SWEEP {sw['day']} P&L ${sw['day_pnl']:.2f} -> +${sw['swept']:.2f} "
+              f"capital now ${sw['capital']:.2f}")
 
     eq = broker.con.execute(
         "SELECT equity, realized, unrealized FROM equity ORDER BY ts DESC LIMIT 1"

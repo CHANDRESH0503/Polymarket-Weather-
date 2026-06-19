@@ -129,6 +129,17 @@ CREATE TABLE IF NOT EXISTS forecast_cache (
     payload  TEXT,
     PRIMARY KEY (station, date, kind)
 );
+
+-- Profit-compounding ledger: one row per resolution day whose net realized P&L
+-- was swept into the capital base. `swept` is the cumulative amount promoted to
+-- starting_cash for that day (idempotent — re-ticks/late settlements only move
+-- the increment). Auditable record of how capital grew beyond starting_cash.
+CREATE TABLE IF NOT EXISTS profit_sweeps (
+    day      TEXT PRIMARY KEY,   -- resolution day (YYYY-MM-DD, from end_date)
+    day_pnl  REAL,               -- net realized P&L attributed to that day
+    swept    REAL,               -- cumulative USDC moved into starting_cash
+    ts       REAL
+);
 """
 
 
@@ -223,6 +234,20 @@ def save_audit(con: sqlite3.Connection, rows: list[dict]) -> int:
     return len(rows)
 
 
+def station_error_metrics(con: sqlite3.Connection,
+                          lookback_days: int) -> dict[str, tuple[float, int]]:
+    """{station: (rolling MAE °C, n resolved days)} over the last `lookback_days`,
+    from logged forecasts vs their backfilled actual max. Feeds the drift guard."""
+    import datetime as _dt
+    since = (_dt.date.today() - _dt.timedelta(days=lookback_days)).isoformat()
+    rows = con.execute(
+        """SELECT station, AVG(ABS(actual_max - mean)) AS mae, COUNT(*) AS n
+             FROM forecasts
+            WHERE actual_max IS NOT NULL AND date >= ?
+            GROUP BY station""", (since,)).fetchall()
+    return {r["station"]: (float(r["mae"]), int(r["n"])) for r in rows}
+
+
 def get_meta(con: sqlite3.Connection, key: str, default: float = 0.0) -> float:
     row = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     return float(row["value"]) if row else default
@@ -231,6 +256,17 @@ def get_meta(con: sqlite3.Connection, key: str, default: float = 0.0) -> float:
 def set_meta(con: sqlite3.Connection, key: str, value: float) -> None:
     con.execute("INSERT INTO meta VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=?",
                 (key, str(value), str(value)))
+
+
+def record_profit_sweep(con: sqlite3.Connection, day: str, day_pnl: float,
+                        swept: float) -> None:
+    """Upsert the cumulative amount swept into capital for a resolution day.
+    Does not commit (the caller commits atomically with the starting_cash bump)."""
+    con.execute(
+        """INSERT INTO profit_sweeps (day, day_pnl, swept, ts) VALUES (?,?,?,?)
+           ON CONFLICT(day) DO UPDATE SET day_pnl=excluded.day_pnl,
+             swept=excluded.swept, ts=excluded.ts""",
+        (day, day_pnl, swept, time.time()))
 
 
 def save_forecast_dist(con: sqlite3.Connection, station: str, date: str,

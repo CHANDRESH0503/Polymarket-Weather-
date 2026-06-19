@@ -52,6 +52,16 @@ MAX_DAY_FRACTION = _f("MAX_DAY_FRACTION", 0.5)
 # Seoul) — a single bad station read or source mismatch then dominates P&L. Caps
 # correlated single-name risk on top of the per-day cap.
 MAX_CITY_FRACTION = _f("MAX_CITY_FRACTION", 0.25)
+# Profit compounding. After a resolution day is fully settled, if its NET realized
+# P&L clears PROFIT_SWEEP_MIN, PROFIT_SWEEP_FRACTION of that day's profit is swept
+# into the capital base (starting_cash) — which raises the reserve floor and the
+# per-day/per-city exposure caps above, so a winning book is allowed to deploy
+# more. Realized-only (locked-in P&L, not volatile marks) and half (the rest
+# stays as ordinary equity), so capital grows conservatively as the edge proves
+# out. Idempotent per day; see PaperBroker.sweep_profit_to_capital.
+PROFIT_SWEEP = _b("PROFIT_SWEEP", "1")
+PROFIT_SWEEP_MIN = _f("PROFIT_SWEEP_MIN", 10)
+PROFIT_SWEEP_FRACTION = _f("PROFIT_SWEEP_FRACTION", 0.5)
 # Paper fills walk the live order book (depth + slippage) instead of magically
 # filling the whole size at the quoted price. Falls back to quoted-price fills if
 # the book is unavailable.
@@ -69,6 +79,15 @@ MIN_PRICE = _f("MIN_PRICE", 0.03)
 MAX_PRICE = _f("MAX_PRICE", 0.97)
 MIN_HOURS_TO_RESOLVE = _f("MIN_HOURS_TO_RESOLVE", 8)
 
+# Absolute floor on the predictive max-temp sigma (°C) — a low safety against a
+# pathologically collapsed distribution, applied to EVERY station. Keep it LOW:
+# a 28-day backtest showed raising it to 1.5 over-widened the 9 well-calibrated
+# stations (whose realized residual σ is only 0.44–1.06) and DEGRADED multiclass
+# Brier 0.7424 → 0.7550. Per-station humility for the few overconfident stations
+# (e.g. RCSS/Taipei) is the targeted `sigma_min:` key in config/calibration.yaml,
+# not this global knob.
+MIN_PREDICTIVE_SIGMA = _f("MIN_PREDICTIVE_SIGMA", 0.5)
+
 # Auto-execution gates. Each is an EXTRA opt-in on top of DRY_RUN+PK: even with
 # DRY_RUN=0 and a funded wallet, the arb / LP bots only send orders when their
 # own flag is set. Default off.
@@ -76,8 +95,11 @@ ARB_EXECUTE = _b("ARB_EXECUTE", "0")
 ARB_MIN_PROFIT = _f("ARB_MIN_PROFIT", 0.02)        # min basket edge to act on
 ARB_MAX_CAPITAL = _f("ARB_MAX_CAPITAL", 200)       # max USDC deployed per basket
 LP_EXECUTE = _b("LP_EXECUTE", "0")
-LP_SIZE = _f("LP_SIZE", 50)                        # shares per maker quote
+LP_SIZE = _f("LP_SIZE", 50)                        # shares per maker quote (per side)
 LP_EVENTS = _clean("LP_EVENTS", "")
+LP_MAX_CAPITAL = _f("LP_MAX_CAPITAL", 50)          # max USDC tied up in resting quotes
+LP_COMPETITION = _f("LP_COMPETITION", 0.0)         # assumed summed Q_min of OTHER makers
+                                                   # (only affects the reward ESTIMATE)
 
 # Tier 3 — intraday nowcasting. When on, same-day markets are scored from a
 # nowcast that folds the running observed station max (the resolution source) in
@@ -89,6 +111,23 @@ NOWCAST_RESID_SIGMA = _f("NOWCAST_RESID_SIGMA", 0.6)   # °C residual on remaini
 NOWCAST_SAMPLES = int(_f("NOWCAST_SAMPLES", 4000))     # MC samples for the daily-max dist
 CORR_KELLY = _b("CORR_KELLY", "0")
 CORR_KELLY_RHO = _f("CORR_KELLY_RHO", 0.3)             # assumed cross-bet outcome correlation
+
+# Per-station drift kill-switch. When a station's recent forecast keeps missing
+# (rolling MAE over the last DRIFT_LOOKBACK_DAYS ≥ DRIFT_MAX_MAE °C, with at least
+# DRIFT_MIN_SAMPLES resolved days), the model is demonstrably wrong there — e.g.
+# RCSS/Taipei ran 3–4σ hot in a heat regime σ-widening alone didn't catch. We
+# SKIP all trades on a drifting station until its error recovers (the lookback
+# window self-heals as good days accrue). Capital protection > a few missed
+# trades, so it's on by default. Needs the forecasts table (paper store) backfilled.
+DRIFT_GUARD = _b("DRIFT_GUARD", "1")
+DRIFT_LOOKBACK_DAYS = int(_f("DRIFT_LOOKBACK_DAYS", 7))
+DRIFT_MAX_MAE = _f("DRIFT_MAX_MAE", 2.5)               # °C rolling MAE that benches a station
+# Resolved days required before the guard can trip. =1 reacts to the FIRST big
+# miss (a single 2.5°+ error is ~3σ — a strong signal; the lookback self-heals a
+# fluke). A temporal backtest on the paper run showed =2 reacts a day too late —
+# it benched Taipei only AFTER both ruinous losses, then sat out the recovering
+# winning days (net worse). =1 caught the second loss. Capital protection wins.
+DRIFT_MIN_SAMPLES = int(_f("DRIFT_MIN_SAMPLES", 1))
 
 # Smart-money agreement signal. Cross-check our signals against proven weather
 # traders' live entries (matched by Polymarket token id). Advisory by default —

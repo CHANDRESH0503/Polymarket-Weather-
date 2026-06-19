@@ -14,7 +14,8 @@ import requests
 
 from ..config import (GAMMA_API, STATIONS, CASH_BUFFER, PAPER_DEPTH,
                       MAX_DAY_FRACTION, MAX_CITY_FRACTION, EQUITY_SNAPSHOT_INTERVAL,
-                      MIN_STAKE_PER_MARKET)
+                      MIN_STAKE_PER_MARKET, PROFIT_SWEEP, PROFIT_SWEEP_MIN,
+                      PROFIT_SWEEP_FRACTION)
 from ..forecast.openmeteo import fetch_actual_max
 from ..forecast.metar import fetch_station_daily_max
 from ..polymarket import clob
@@ -241,6 +242,51 @@ class PaperBroker:
                    "wins": tally["w"], "settled": tally["n"]}
         for f in settled:
             notify.notify_settlement(f, balance)
+
+    def sweep_profit_to_capital(self) -> list[dict]:
+        """Compound realized profit into the capital base.
+
+        For every fully-resolved (strictly past) resolution day whose NET
+        realized P&L clears PROFIT_SWEEP_MIN, move PROFIT_SWEEP_FRACTION of that
+        day's profit into `starting_cash`. starting_cash is the base the reserve
+        floor and per-day/per-city exposure caps scale from (see execute()), so
+        this lets a proven, winning book deploy more — capital that grows with
+        the edge. The profit itself already sits in cash (settlement credited
+        it); this only *reclassifies* half of it as capital, inventing no money.
+
+        Attributes P&L to a market's resolution day (end_date) and only sweeps
+        days now in the past, so the figure is final. Idempotent: `profit_sweeps`
+        tracks the amount already promoted per day, so re-ticks and late-settling
+        stragglers move only the increment. Returns the sweeps applied this call.
+        """
+        if not PROFIT_SWEEP or PROFIT_SWEEP_FRACTION <= 0:
+            return []
+        today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+        rows = self.con.execute(
+            """SELECT d.day AS day, d.pnl AS pnl, COALESCE(s.swept, 0) AS swept
+                 FROM (SELECT substr(end_date,1,10) AS day, SUM(pnl) AS pnl
+                         FROM fills
+                        WHERE status='settled' AND end_date IS NOT NULL
+                              AND substr(end_date,1,10) < ?
+                        GROUP BY day
+                       HAVING SUM(pnl) > ?) d
+                 LEFT JOIN profit_sweeps s ON s.day = d.day""",
+            (today, PROFIT_SWEEP_MIN)).fetchall()
+        applied: list[dict] = []
+        for r in rows:
+            target = PROFIT_SWEEP_FRACTION * r["pnl"]      # cumulative goal for the day
+            delta = round(target - r["swept"], 6)          # only the not-yet-swept part
+            if delta <= 0:
+                continue
+            start = store.get_meta(self.con, "starting_cash")
+            new_capital = round(start + delta, 6)
+            store.set_meta(self.con, "starting_cash", new_capital)
+            store.record_profit_sweep(self.con, r["day"], r["pnl"], round(target, 6))
+            applied.append({"day": r["day"], "day_pnl": round(r["pnl"], 2),
+                            "swept": round(delta, 2), "capital": round(new_capital, 2)})
+        if applied:
+            self.con.commit()
+        return applied
 
     def backfill_actuals(self) -> int:
         """Fill realized max-temp for past forecast dates (ERA5 archive).

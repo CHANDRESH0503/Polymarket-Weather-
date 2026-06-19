@@ -20,16 +20,23 @@ from .openmeteo import MaxTempForecast
 
 
 def _mu_sigma(fc: MaxTempForecast) -> tuple[float, float]:
+    # Humility floor on σ. MIN_PREDICTIVE_SIGMA is a LOW global safety (raising it
+    # globally over-widens well-calibrated stations and degrades Brier — measured);
+    # fc.sigma_min is the TARGETED per-station floor (config/calibration.yaml) that
+    # widens only demonstrably overconfident/drifting stations like RCSS/Taipei,
+    # which otherwise throw ruinous ~0.000-probability "No" bets in a heat regime.
+    from ..config import MIN_PREDICTIVE_SIGMA
+    floor = max(MIN_PREDICTIVE_SIGMA, fc.sigma_min)
     # EMOS/NGR (preferred when fitted): μ = a + b·mean, σ² = c + d·var.
     if fc.emos is not None:
         a, b, c, d = fc.emos
         mu = a + b * fc.mean
         sigma = float(np.sqrt(max(c + d * fc.std ** 2, 0.25)))
-        return mu, sigma
+        return mu, max(sigma, floor)
     # Fallback: hand-tuned bias + sigma_floor (per-station, see calibrate.py).
     mu = fc.mean - fc.bias_c
     sigma = float(np.sqrt(fc.std ** 2 + fc.sigma_floor ** 2))
-    return mu, max(sigma, 0.5)
+    return mu, max(sigma, floor)
 
 
 def apply_calibration(fc: MaxTempForecast, calibration: dict) -> MaxTempForecast:
@@ -39,6 +46,7 @@ def apply_calibration(fc: MaxTempForecast, calibration: dict) -> MaxTempForecast
     cal = calibration.get(fc.station_code, {})
     fc.bias_c = float(cal.get("bias", 0.0))
     fc.sigma_floor = float(cal.get("sigma", DEFAULT_SIGMA_FLOOR))
+    fc.sigma_min = float(cal.get("sigma_min", 0.0))
     e = cal.get("emos")
     if e:
         fc.emos = (float(e["a"]), float(e["b"]), float(e["c"]), float(e["d"]))

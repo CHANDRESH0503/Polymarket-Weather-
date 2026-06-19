@@ -159,7 +159,8 @@ def _build_scorer(station: str, date: str):
 def generate_signals(markets: list[TempMarket],
                      min_edge: float = MIN_EDGE,
                      scorer_for=None, peer_book: dict | None = None,
-                     bankroll: float = BANKROLL) -> list[Signal]:
+                     bankroll: float = BANKROLL,
+                     blocked_stations: set[str] | None = None) -> list[Signal]:
     """Score every bucket market against one forecast per (station, date).
 
     By default each (station, date) is fetched live via `_build_scorer`. Callers
@@ -172,14 +173,21 @@ def generate_signals(markets: list[TempMarket],
 
     `bankroll` is the wealth Kelly sizes against — pass *live equity* (the paper
     daemon does) so stakes compound as the book grows and shrink in a drawdown;
-    defaults to the static config BANKROLL for one-shot callers (e.g. the CLI)."""
+    defaults to the static config BANKROLL for one-shot callers (e.g. the CLI).
+
+    `blocked_stations` (drift kill-switch) are benched entirely — we skip them
+    before fetching a forecast, so a demonstrably-drifting station places no
+    trades until its error recovers."""
     builder = scorer_for or _build_scorer
+    blocked = blocked_stations or set()
     cache: dict[tuple[str, str], object] = {}
     signals: list[Signal] = []
 
     for m in markets:
         station = m.station_code
         if not station or station not in STATIONS:
+            continue
+        if station in blocked:           # drift guard: station benched
             continue
         date = m.end_date[:10]
         key = (station, date)
